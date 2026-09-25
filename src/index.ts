@@ -1,11 +1,19 @@
 interface McpToolDefinition {
   name: string;
   description: string;
+  /** Human-facing one-liner (fleet #1967). Optional; consumers fall back to
+   *  description. Kept in step with shared/src/types.ts — scripts/lib/
+   *  check-inlined-types.mjs reports drift at publish time. */
+  summary?: string;
   inputSchema: {
     type: 'object';
     properties: Record<string, unknown>;
     required?: string[];
+    anyOf?: Array<{ required: string[] }>;
+    oneOf?: Array<{ required: string[] }>;
+    allOf?: Array<{ required: string[] }>;
   };
+  outputSchema?: Record<string, unknown>;
 }
 
 interface McpToolExport {
@@ -73,7 +81,7 @@ const tools: McpToolExport['tools'] = [
   {
     name: 'pdufa_catalysts',
     description:
-      'Companies with disclosed PDUFA dates — the highest-signal binary biotech catalyst. Searches recent SEC EDGAR 8-K filings (keyless) for PDUFA target / goal / action dates and extracts the date and surrounding context. A PDUFA date is the FDA decision date for an NDA or BLA; it is a scheduled binary event that moves biotech stocks. Returns each disclosure with company, ticker, CIK, filing date, form, PDUFA date (ISO when parseable), a short context snippet, the SEC filing URL, and accession number. Use for PDUFA date, PDUFA goal date, FDA decision date, upcoming FDA decisions, drug approval catalyst, NDA/BLA decision date, biotech binary event, catalyst by ticker.',
+      'Companies with disclosed PDUFA dates — the highest-signal binary biotech catalyst. Searches recent SEC EDGAR 8-K filings (keyless) for PDUFA target / goal / action dates and extracts the date and surrounding context. A PDUFA date is the FDA decision date for an NDA or BLA; it is a scheduled binary event that moves biotech stocks. Returns each disclosure with company, ticker, CIK, filing date, form, PDUFA date (ISO when the filing gives a specific day), pdufa_period when the filing discloses only a coarser grain such as "Q1 2027" or "March 2027", a short context snippet, the SEC filing URL, and accession number. A row may carry a period without a date — that is the filing being vague, not a lookup failure. Use for PDUFA date, PDUFA goal date, FDA decision date, upcoming FDA decisions, drug approval catalyst, NDA/BLA decision date, biotech binary event, catalyst by ticker. ALSO the REGULATORY-STATUS reading of the same data, which is what most callers actually ask: which drugs are currently UNDER FDA REVIEW, which medicines ENTERED FDA REVIEW or were ACCEPTED FOR REVIEW recently, new NDA/BLA SUBMISSIONS and FILINGS ACCEPTED by the FDA, drugs AWAITING FDA APPROVAL, what is in the FDA review queue. A company announces acceptance in an 8-K at the moment review begins, so filing_date is when the drug ENTERED review and pdufa_date is when the decision is due — bounding filing_date with since/until answers "what entered FDA review last week". Note this is REGULATORY review of a marketing application, not clinical trials: for drugs entering or moving through TRIALS use the clinicaltrials tools instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -138,6 +146,12 @@ async function fdaAdcomCalendar(args: Record<string, unknown>): Promise<unknown>
 
   const data = (await frGet(params)) as { count?: number; results?: any[] };
   let notices = data.results ?? [];
+
+  // The Federal Register term search also matches the housekeeping notices a
+  // committee generates — charter renewals, establishments, terminations,
+  // membership calls. Those carry a date and look exactly like a meeting row while
+  // being nothing anyone can trade or attend. Drop them before they reach a caller.
+  notices = notices.filter((n) => !isAdministrativeNotice(String(n.title ?? '')));
 
   // Optional committee/title filter before spending body fetches.
   if (committee) {
@@ -242,8 +256,13 @@ async function pdufaCatalysts(args: Record<string, unknown>): Promise<unknown> {
   const extra = strArg(args.query);
   const limit = clampInt(args.limit, 8, 1, 10);
   const today = todayISO();
-  const since = strArg(args.since) ?? isoDaysAgo(120);
-  const until = strArg(args.until) ?? today;
+  // Guard: "upcoming PDUFA dates in the next N days" causes the LLM to set
+  // since/until into the future. Future 8-K filings don't exist — reset to
+  // the default 120-day rolling window so the query still returns real data.
+  let since = strArg(args.since) ?? isoDaysAgo(120);
+  let until = strArg(args.until) ?? today;
+  if (since > today) { since = isoDaysAgo(120); until = today; }
+  else if (until > today) { until = today; }
 
   const q = extra ? `"PDUFA" AND "${extra.replace(/"/g, '')}"` : '"PDUFA"';
   const params = new URLSearchParams();
@@ -281,6 +300,8 @@ interface PdufaRow {
   filing_date: string | null;
   form: string | null;
   pdufa_date: string | null;
+  /** Set when the filing disclosed only a quarter/half/month ("Q1 2027") rather than a day. */
+  pdufa_period: string | null;
   pdufa_context: string | null;
   url: string | null;
   accession: string | null;
@@ -293,7 +314,10 @@ async function shapePdufaRow(h: Record<string, any>): Promise<PdufaRow> {
   const display = Array.isArray(src.display_names) && src.display_names.length ? String(src.display_names[0]) : '';
   const { company, ticker, cik } = parseDisplayName(display);
 
+  const filingDate: string | null = src.file_date ?? null;
+
   let pdufaDate: string | null = null;
+  let pdufaPeriod: string | null = null;
   let context: string | null = null;
   if (cik && accession && primaryDoc) {
     const accNoDash = accession.replace(/-/g, '');
@@ -303,7 +327,12 @@ async function shapePdufaRow(h: Record<string, any>): Promise<PdufaRow> {
     if (html) {
       const ext = extractPdufa(html);
       pdufaDate = ext.date;
+      pdufaPeriod = ext.period;
       context = ext.context;
+      // Backstop: an "action date" identical to the filing date is almost always the
+      // document's own date stamp scraped out of page furniture, not a disclosure.
+      // Drop it rather than hand back a date that reads authoritative and isn't.
+      if (pdufaDate && filingDate && pdufaDate === filingDate) pdufaDate = null;
     }
   }
 
@@ -317,9 +346,10 @@ async function shapePdufaRow(h: Record<string, any>): Promise<PdufaRow> {
     company,
     ticker,
     cik,
-    filing_date: src.file_date ?? null,
+    filing_date: filingDate,
     form: src.form_type ?? '8-K',
     pdufa_date: pdufaDate,
+    pdufa_period: pdufaPeriod,
     pdufa_context: context,
     url,
     accession: accession || null,
@@ -345,15 +375,70 @@ function parseDisplayName(display: string): { company: string | null; ticker: st
   return { company, ticker, cik };
 }
 
-function extractPdufa(html: string): { date: string | null; context: string | null } {
+const MONTH = '(?:January|February|March|April|May|June|July|August|September|October|November|December)';
+
+/**
+ * Pull the PDUFA action date out of a filing.
+ *
+ * Two things this deliberately does NOT do, both learned from real filings:
+ *
+ * 1. It will not scan far past the word PDUFA looking for a date. Issuers often
+ *    disclose a QUARTER ("PDUFA DATE Q1 2027") on a slide whose footer carries the
+ *    filing date; a wide window skips the quarter, walks into the page furniture and
+ *    returns the filing date as if it were the action date — confidently wrong, which
+ *    is worse than empty. 60 chars comfortably covers the real phrasings
+ *    ("PDUFA target action date of January 29, 2027").
+ * 2. It does not force a quarter into a fake day. A quarter comes back as `period`
+ *    with `date` left null, so a caller can see the grain it was actually given.
+ */
+function extractPdufa(html: string): { date: string | null; period: string | null; context: string | null } {
   const text = stripHtml(html);
-  const m = text.match(
-    /PDUFA[^.]{0,140}?\b((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4})/i,
+
+  const exact = text.match(new RegExp(`PDUFA[^.]{0,60}?\\b(${MONTH}\\s+\\d{1,2},?\\s+\\d{4})`, 'i'));
+  if (exact) {
+    return {
+      date: parseLooseDate(exact[1]),
+      period: null,
+      context: exact[0].replace(/\s+/g, ' ').trim().slice(0, 160),
+    };
+  }
+
+  // No day-level date near PDUFA — accept a quarter/half/month-year as a coarser grain.
+  const coarse = text.match(
+    new RegExp(
+      `PDUFA[^.]{0,60}?\\b(Q[1-4]\\s*(?:of\\s+)?\\d{4}` +
+        `|(?:first|second|third|fourth)\\s+quarter\\s+(?:of\\s+)?\\d{4}` +
+        `|(?:first|second)\\s+half\\s+(?:of\\s+)?\\d{4}` +
+        `|${MONTH}\\s+\\d{4})`,
+      'i',
+    ),
   );
-  if (!m) return { date: null, context: null };
-  const date = parseLooseDate(m[1]);
-  const context = m[0].replace(/\s+/g, ' ').trim().slice(0, 160);
-  return { date, context };
+  if (coarse) {
+    return {
+      date: null,
+      period: coarse[1].replace(/\s+/g, ' ').trim(),
+      context: coarse[0].replace(/\s+/g, ' ').trim().slice(0, 160),
+    };
+  }
+
+  return { date: null, period: null, context: null };
+}
+
+/**
+ * True for Federal Register notices that are committee administration rather than a
+ * scheduled meeting: charter renewals, establishments, terminations, and calls for
+ * nominations. They match the same search term and parse to a date, so without this
+ * they surface alongside genuine panel reviews and read as catalysts.
+ */
+function isAdministrativeNotice(title: string): boolean {
+  // A real meeting notice wins over any administrative suffix — e.g.
+  // "…; Notice of Meeting; Establishment of a Public Docket" is a meeting that also
+  // opens a docket, not a committee establishment.
+  if (/\bnotice of meeting\b|\bmeeting notice\b/i.test(title)) return false;
+
+  return /;\s*(renewal|establishment|termination|amendment|re-?charter)\b/i.test(title)
+    || /\b(request|call) for nominations\b/i.test(title)
+    || /\bnotice of (renewal|termination|establishment)\b/i.test(title);
 }
 
 function stripHtml(html: string): string {

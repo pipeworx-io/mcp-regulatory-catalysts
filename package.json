@@ -1,20 +1,32 @@
 {
   "name": "@pipeworx/mcp-regulatory-catalysts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Regulatory Catalysts MCP — high-value biotech regulatory calendar events (keyless).",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "bin": {
+    "mcp-regulatory-catalysts": "bin/cli.js"
+  },
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "pipeworx", "regulatory-catalysts"],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pipeworx-io/mcp-regulatory-catalysts"
+    "url": "git+https://github.com/pipeworx-io/mcp-regulatory-catalysts.git"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "tsx": "^4.19.0"
+  },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "typescript": "^5.9.3",
+    "@cloudflare/workers-types": "^4.20260405.1"
+  },
+  "pipeworx": {
+    "sourceHash": "v1-472ebbfd877fbcbf4bbe32f0e03ae8e07f49146833de174a1a3e74a931e016b4",
+    "sourceCommit": "00c836ddeaecbdd581dcfb0fb1842efea104006e"
   }
 }
