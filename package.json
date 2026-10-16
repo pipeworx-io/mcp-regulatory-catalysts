@@ -1,6 +1,6 @@
 {
   "name": "@pipeworx/mcp-regulatory-catalysts",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Regulatory Catalysts MCP — high-value biotech regulatory calendar events (keyless).",
   "type": "module",
   "main": "src/index.ts",
@@ -26,7 +26,7 @@
     "@cloudflare/workers-types": "^4.20260405.1"
   },
   "pipeworx": {
-    "sourceHash": "v1-2bd4fc310dfeb580a9979496d08ffccd72957efc2361e7107e174ee0ca18d577",
-    "sourceCommit": "0ce6905893fe8da0d285be2f05754a4200d67371"
+    "sourceHash": "v1-9a85baf963575ee6aae074bfd7e80538360ab1b919af13a035706e5e9d5d48e1",
+    "sourceCommit": "fe38188882d0fe91e5a45d82b7b989b4aae1e8b6"
   }
 }
